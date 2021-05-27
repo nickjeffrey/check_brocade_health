@@ -1,0 +1,528 @@
+#!/usr/bin/perl -w
+#
+
+
+
+# DESCRIPTION
+# -----------
+#  This script is a nagios check that determines the health status of a Brocade fibre switch
+
+
+# OUTSTANDING TASKS
+# ----------------
+
+
+
+
+# CHANGE LOG
+# ----------
+#  2006/04/27	roderick@r71.nl	original Author : Roderick Derks 
+#  2008/01/11	marco@ccit.nl 	Rewrite for IBM 2005 B16 by Core Competence IT 
+#  2010/04/13	njeffrey	Full rewrite using original script as starting point
+#  2010/04/13	njeffrey	Add support for Brocade Silkworm 4100 
+#  2010/04/13	njeffrey	Remove dutch language entries and replace with english 
+#  2010/04/13	njeffrey	Break code into subroutines 
+#  2010/04/13	njeffrey	change indentation style 
+#  2010/04/13	njeffrey	use strict
+#  2010/04/13	njeffrey 	replace snmpwalk with snmpget
+#  2010/04/13 	njeffrey 	add -Oqv switch to snmpget to simplify regex 
+#  2010/04/13 	njeffrey 	add documentation 
+#  2015/07/23 	njeffrey 	Replace /usr/bin/snmpget with Net::SNMP perl module
+#  2020/l2/23 	njeffrey 	Add --verbose switch
+#  2020/l2/23 	njeffrey 	Replace Net::SNMP perl module with snmpget/snmpwalk
+
+
+
+
+# NOTES
+# -----
+#
+#  This script should return one (and only one) line of ouput.  Multiple
+#  lines of output are silently ignored by nagios.
+#
+#  The line of output will become the body of the alert message sent by nagios
+#
+#
+#  You will need a section in the services.cfg
+#  file on the nagios server that looks similar to the following.
+#   define service{
+#           use                             generic-24x7-service
+#           host_name                       fcswitch2
+#           service_description             Brocade health check
+#           check_command                   check_brocade_health!public
+#           }
+#
+#  You will need a section in the commands.cfg
+#  file on the nagios server that looks similar to the following.
+#     # ---------------------------------------------------------------------------
+#     # 'check_brocade_health' command definition
+#     define command{
+#             command_name    check_brocade_health!public
+#             command_line    $USER1$/check_brocade_health -H $HOSTADDRESS$ -c $ARG1$
+#             }
+#
+#
+#
+
+
+use strict;					#enforce good coding practices
+use Getopt::Long;                       	#allow --long-switches to be used as parameters
+#use Net::SNMP;					#install perl module with:   perl -MCPAN -e 'install Net::SNMP'   or yum install perl-Net-SNMP
+
+
+# declare variables
+my ($OK,$WARN,$CRITICAL,$UNKNOWN);
+my ($CHECK_NAME,$host,$community,$community_default,$switch_type,$switch_status,$port_count,$fabos_version);
+my ($pingstatus,$snmpwalk,$snmpget,$cmd,$sysdescr,$cpu_util,$ram_util,$fan_count,$ps_count,$temperature,$common_output);
+my ($opt_c,$opt_h,$opt_H,$opt_v);
+my ($verbose,$oid);
+$community_default="public";			#use this value if user does not specify SNMP community string
+$CHECK_NAME= "Brocade health";
+$verbose = "no";				#for debugging
+
+
+
+#
+# Nagios return codes
+#
+$OK       = 0;
+$WARN     = 1;
+$CRITICAL = 2;
+$UNKNOWN  = 3;
+
+
+
+
+
+sub get_options {
+   #
+   # this gets the command line parameters provided by the users
+   print "running get_options subroutine \n" if ($verbose eq "yes");
+   #
+   Getopt::Long::Configure('bundling');
+   GetOptions(
+      "h"   => \$opt_h, "help"        => \$opt_h,
+      "v"   => \$opt_v, "verbose"     => \$opt_v,
+      "c=s" => \$opt_c, "community=s" => \$opt_c, 
+      "H=s" => \$opt_H, "host=s"      => \$opt_H, 
+   );
+   #
+   # If the user did not supply a --community= value, use the default.
+   #
+   if( defined( $opt_c ) ) {
+      $community = $opt_c;
+   } else {
+      $community = $community_default;
+   }
+   #
+   # If the user did not supply a -H or --host== value, generate a warning.
+   #
+   if( defined( $opt_H ) ) {
+      $host = $opt_H;
+   } else {
+      print "$CHECK_NAME Unknown - cannot determine remote host.  Usage: $0 -H host -c community \n";
+      exit $UNKNOWN;				#exit script
+   }
+   #
+   #
+   # see if user provided -v or --verbose switch
+   if ( defined($opt_v) ) {  
+      $verbose = "yes";
+      print "   host=$host community=$community \n" if ($verbose eq "yes");
+   } 							#end of if block
+}                       #end of subroutine
+
+
+
+
+sub sanity_checks {
+   #
+   print "running sanity_checks subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   # Confirm required files exist 
+   # 
+   $snmpget = "/usr/local/bin/snmpget           -r 2 -t 5 -v 1 -c $community    $host"   if ( -e "/usr/local/bin/snmpget" );
+   $snmpget = "/usr/bin/snmpget                 -r 2 -t 5 -v 1 -c $community    $host"   if ( -e "/usr/bin/snmpget" );
+   #
+   $snmpwalk = "/usr/local/bin/snmpwalk         -r 2 -t 5 -v 1 -c $community    $host"   if ( -e "/usr/local/bin/snmpget" );
+   $snmpwalk = "/usr/bin/snmpwalk               -r 2 -t 5 -v 1 -c $community    $host"   if ( -e "/usr/bin/snmpget" );
+   #
+   #
+   # confirm a remote host is defined
+   if( ! defined( $host ) ) {
+      print "$CHECK_NAME Unknown - missing name of remote host to check.  Use $0 -h for help\n";
+      exit $UNKNOWN;                                    #exit script
+   }
+   #
+   #
+   #
+   # Confirm the remote host is up
+   #
+   print "   trying to ping $host \n" if ($verbose eq "yes");
+   open(IN,"ping -c 1 -w 1 $host 2>&1 |");     #send a single ping to the remote host and wait 1 second for a reply
+   while (<IN>) {                                  #read a line from STDIN
+      if ( /100% packet loss/ ) {                  #check for ping timeouts (indicates host may be down)
+         $pingstatus = "$CHECK_NAME UNKNOWN -- no ping reply from $host \n";
+         print $pingstatus;                            #print error message
+         exit $UNKNOWN;                            #exit script
+      }                                            #end of if block
+      if ( /NOT FOUND/ ) {                         #check for invalid hostname (using AIX ping)
+         $pingstatus = "$CHECK_NAME UNKNOWN -- could not resolve hostname $host \n";
+         print $pingstatus;                            #print error message
+         exit $UNKNOWN;                            #exit script
+      }                                            #end of if block
+      if ( /unknown host/ ) {                      #check for invalid hostname (using Linux ping)
+         $pingstatus = "$CHECK_NAME UNKNOWN -- could not resolve hostname $host \n";
+         print $pingstatus;                            #print error message
+         exit $UNKNOWN;                            #exit script
+      }                                            #end of if block
+      if ( /no route to host/ ) {                  #check for routing problems
+         $pingstatus = "$CHECK_NAME UNKNOWN -- could not find a route to $host - check routing tables \n";
+         print $pingstatus;                            #print error message
+         exit $UNKNOWN;                            #exit script
+      }                                            #end of if block
+   }                                               #end of while loop
+   close IN;                                       #close filehandle
+}						#end of subroutine
+
+
+
+
+
+sub get_usage {
+   #
+   # this subroutine gets called if user enters -h or --help parameters
+   print "running get_usage subroutine \n" if ($verbose eq "yes");
+   #
+   if( $opt_h ) {
+      print "Nagios plugin for determining health of Brocade fibre switch \n";
+      print "$0 [options]  \n";
+      print "    where options are: \n";
+      print "    -c --community=SNMP_community_string     (default=public)\n";
+      print "    -h --help \n";
+      print "    -H --host=IP|hostname \n";
+      print "    -v --verbose \n";
+      print "\n\n";
+      exit;
+   }                                            #end of if block
+}						#end of subroutine
+
+
+
+
+
+sub confirm_snmp_working {
+   #
+   # This section confirms the remote host will respond to SNMP queries
+   #
+   print "Running confirm_snmp_working subroutine \n" if ($verbose eq "yes");
+   # Get the system description via SNMP
+   # SNMPv2-MIB::sysDescr.0
+   #
+   $sysdescr = "";				#initialize variable
+   $oid = ".1.3.6.1.2.1.1.1.0";
+   $cmd = "$snmpget $oid 2>&1"; 		#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 		#open a filehandle for reading 
+   while (<IN>) {                          	#read a line from STDIN
+      if ( /STRING: ([a-zA-Z0-9\.]+)/ ) {  	#look for a response to the snmp query
+         $sysdescr = $1;			#assign more mnemonic variable name
+      } 					#end of if block
+   }						#end of while loop
+   close IN;					#close filehandle
+   unless ( $sysdescr =~ /[a-zA-Z0-9\.]+/ ) {
+      print "$CHECK_NAME CRITICAL -- could not query $host via SNMP.  Confirm you have the correct SNMP community string and the remote host $host has a working SNMP daemon.\n";
+      exit $UNKNOWN;				#exit script 
+   }						#end of unless block
+}						#end of subroutine
+
+
+
+
+sub get_switch_type {
+   #
+   # figure out what kind of brocade switch we are dealing with
+   #
+   print "running get_switch_type subroutine \n" if ($verbose eq "yes");
+   $switch_type = "unknown";			#initialize variable 
+   $oid = ".1.3.6.1.2.1.47.1.1.1.1.2.1"; 
+   $cmd = "$snmpget $oid 2>&1";			#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 				#open a filehandle for reading 
+   while (<IN>) {                          	#read a line from STDIN
+      if ( /STRING: \"([0-9a-zA-Z_\.]+)\"/ ) {  #look for a response to the snmp query
+         $switch_type = $1;			#assign more mnemonic variable name
+         print "   switch_type is $switch_type \n" if ($verbose eq "yes");
+      } 					#end of if block
+   }						#end of while loop
+   close IN;					#close filehandle
+   #
+   #
+   # confirm we got a valid switch type
+   if ( $switch_type =~ /Timeout/ ) {					#look for specific error
+      print "$CHECK_NAME Unknown - SNMP request timed out.  Check SNMP community string.\n";
+      exit $UNKNOWN;				#exit script
+   }									#end of if block
+}									#end of subroutine
+
+
+
+sub get_switch_status {
+   #
+   print "running get_switch_status subroutine \n" if ($verbose eq "yes");
+   #
+   #  OID: 1.3.6.1.4.1.1588.2.1.1.1.1.20.0 
+   # Possible OID values:
+   #   1 - sw-ok                    switch OK
+   #   2 - sw-faulty                The switch has experienced an unknown fault
+   #   3 - sw-embedded-port-fault   The switch has experienced an embedded port fault
+
+   $oid = "1.3.6.1.4.1.1588.2.1.1.1.1.20.0"; 
+   $cmd = "$snmpget $oid 2>&1";			#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 				#open a filehandle for reading 
+   while (<IN>) {                          	#read a line from STDIN
+      if ( /INTEGER: ([0-9]+)/ ) {  		#look for a response to the snmp query
+         $switch_status = $1;			#assign more mnemonic variable name
+         print "   switch_status is $switch_status  (1=ok 2=faulty 3=embedded-port-fault) \n" if ($verbose eq "yes");
+      } 					#end of if block
+   }						#end of while loop
+   close IN;					#close filehandle
+   #
+   $switch_status = "OK"                 if ($switch_status eq "1");	#change integer to human readable value
+   $switch_status = "Unknown fault"      if ($switch_status eq "2");	#change integer to human readable value
+   $switch_status = "Embedded port faul" if ($switch_status eq "3");	#change integer to human readable value
+}									#end of subroutine
+
+
+
+
+
+sub get_port_count {
+   #
+   print "running get_port_count subroutine \n" if ($verbose eq "yes");
+   #
+   #  OID: .1.3.6.1.2.1.2.2.1.2.???  shows the interface descriptions.  Count up all the "FC port" devices
+   # Possible OID values:
+   #   .1.3.6.1.2.1.2.2.1.2.805306369 = STRING: eth0
+   #   .1.3.6.1.2.1.2.2.1.2.805306370 = STRING: lo
+   #   .1.3.6.1.2.1.2.2.1.2.805306371 = STRING: sit0
+   #   .1.3.6.1.2.1.2.2.1.2.805306372 = STRING: ip6tnl0
+   #   .1.3.6.1.2.1.2.2.1.2.805306373 = STRING: fc0
+   #   .1.3.6.1.2.1.2.2.1.2.805306374 = STRING: port0
+   #   .1.3.6.1.2.1.2.2.1.2.1073741824 = STRING: FC port 0/0   <--- these are the fibre channel ports we want to count
+   #   .1.3.6.1.2.1.2.2.1.2.1073741825 = STRING: FC port 0/1
+   #   .1.3.6.1.2.1.2.2.1.2.1073741826 = STRING: FC port 0/2
+   #   .1.3.6.1.2.1.2.2.1.2.1073741827 = STRING: FC port 0/3
+   #   .1.3.6.1.2.1.2.2.1.2.1073741828 = STRING: FC port 0/4
+
+   $port_count = 0;				#initialize variable 
+   $oid = "1.3.6.1.2.1.2.2.1.2"; 
+   $cmd = "$snmpwalk $oid 2>&1";			#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 				#open a filehandle for reading 
+   while (<IN>) {                          	#read a line from STDIN
+      if ( /STRING: FC port/ ) {  		#look for a response to the snmp query
+         $port_count++;				#increment counter
+      } 					#end of if block
+   }						#end of while loop
+   close IN;					#close filehandle
+   print "   port_count is $port_count \n" if ($verbose eq "yes");
+}									#end of subroutine
+
+
+
+sub get_fabos_version {
+   #
+   print "running get_fabos_version subroutine \n" if ($verbose eq "yes");
+   #
+   #  OID: .1.3.6.1.2.1.47.1.1.1.1.9.1   shows the Brocade Fabric OS version on the first controller
+   #  OID: .1.3.6.1.2.1.47.1.1.1.1.10.1  shows the Brocade Fabric OS version on the first controller (should be the same as the first controller)
+   #  
+   # .1.3.6.1.2.1.47.1.1.1.1.9.1 = STRING: "8.2.1b"
+
+
+   $fabos_version = "unknown";				#initialize variable 
+   $oid = "1.3.6.1.2.1.47.1.1.1.1.9.1"; 
+   $cmd = "$snmpget $oid 2>&1";			#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 				#open a filehandle for reading 
+   while (<IN>) {                          	#read a line from STDIN
+      if ( /STRING: \"([0-9a-zA-Z_\.]+)\"/ ) {  #look for a response to the snmp query
+         $fabos_version = $1;			#assign to variable
+      } 					#end of if block
+   }						#end of while loop
+   close IN;					#close filehandle
+   print "   fabos_version is $fabos_version \n" if ($verbose eq "yes");
+}									#end of subroutine
+
+
+
+sub get_cpu_util {
+   #
+   print "running get_cpu_util subroutine \n" if ($verbose eq "yes");
+   #
+   #  OID: 1.3.6.1.4.1.1588.2.1.1.1.26.1.0   (CPU utilization percentage)
+
+   $cpu_util = 0;				#initialize variable
+   $oid = "1.3.6.1.4.1.1588.2.1.1.1.26.1.0"; 
+   $cmd = "$snmpget $oid 2>&1";			#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 				#open a filehandle for reading 
+   while (<IN>) {                          	#read a line from STDIN
+      if ( /INTEGER: ([0-9]+)/ ) {  		#look for a response to the snmp query
+         $cpu_util = $1;			#assign more mnemonic variable name
+         print "   cpu_util is ${cpu_util}%  \n" if ($verbose eq "yes");
+      } 					#end of if block
+   }						#end of while loop
+   close IN;					#close filehandle
+}									#end of subroutine
+
+sub get_ram_util {
+   #
+   print "running get_ram_util subroutine \n" if ($verbose eq "yes");
+   #
+   #  OID: 1.3.6.1.4.1.1588.2.1.1.1.26.6.0   (RAM utilization percentage)
+
+   $ram_util = 0;				#initialize variable
+   $oid = "1.3.6.1.4.1.1588.2.1.1.1.26.6.0"; 
+   $cmd = "$snmpget $oid 2>&1";			#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 				#open a filehandle for reading 
+   while (<IN>) {                          	#read a line from STDIN
+      if ( /INTEGER: ([0-9]+)/ ) {  		#look for a response to the snmp query
+         $ram_util = $1;			#assign more mnemonic variable name
+         print "   ram_util is ${ram_util}%  \n" if ($verbose eq "yes");
+      } 					#end of if block
+   }						#end of while loop
+   close IN;					#close filehandle
+}									#end of subroutine
+
+
+
+
+sub get_temperature {
+   #
+   print "running get_temperature subroutine \n" if ($verbose eq "yes");
+   #
+   #  OID: 1.3.6.1.4.1.1588.2.1.1.1.1.22.1.4.1  (temperature in degrees celsius for internal thermal sensor)
+
+   $temperature = 0;				#initialize variable
+   $oid = "1.3.6.1.4.1.1588.2.1.1.1.1.22.1.4.1"; 
+   $cmd = "$snmpget $oid 2>&1";			#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 				#open a filehandle for reading 
+   while (<IN>) {                          	#read a line from STDIN
+      if ( /INTEGER: ([0-9]+)/ ) {  		#look for a response to the snmp query
+         $temperature = $1;			#assign more mnemonic variable name
+         print "   temperature is ${temperature}C  \n" if ($verbose eq "yes");
+      } 					#end of if block
+   }						#end of while loop
+   close IN;					#close filehandle
+}									#end of subroutine
+
+
+sub get_fan_count {
+   #
+   print "running get_fan_count subroutine \n" if ($verbose eq "yes");
+   #
+   #  
+   # .1.3.6.1.2.1.47.1.1.1.1.2.1 = STRING: "IBM_2498_F48"
+   # .1.3.6.1.2.1.47.1.1.1.1.2.2 = STRING: "MODULE"
+   # .1.3.6.1.2.1.47.1.1.1.1.2.3 = STRING: "FAN SLOT"
+   # .1.3.6.1.2.1.47.1.1.1.1.2.4 = STRING: "FAN"
+   # .1.3.6.1.2.1.47.1.1.1.1.2.5 = STRING: "FAN SLOT"
+   # .1.3.6.1.2.1.47.1.1.1.1.2.6 = STRING: "FAN"
+   # .1.3.6.1.2.1.47.1.1.1.1.2.7 = STRING: "POWER SUPPLY SLOT"
+   # .1.3.6.1.2.1.47.1.1.1.1.2.8 = STRING: "POWER SUPPLY"
+   # .1.3.6.1.2.1.47.1.1.1.1.2.9 = STRING: "POWER SUPPLY SLOT"
+   # .1.3.6.1.2.1.47.1.1.1.1.2.10 = STRING: "POWER SUPPLY"
+   # .1.3.6.1.2.1.47.1.1.1.1.2.11 = STRING: "OTHER"
+   #
+   # .1.3.6.1.2.1.47.1.1.1.1.7.1 = ""
+   # .1.3.6.1.2.1.47.1.1.1.1.7.2 = STRING: "MODULE 0"
+   # .1.3.6.1.2.1.47.1.1.1.1.7.3 = STRING: "FAN  1"
+   # .1.3.6.1.2.1.47.1.1.1.1.7.4 = STRING: "FAN  1"
+   # .1.3.6.1.2.1.47.1.1.1.1.7.5 = STRING: "FAN  2"
+   # .1.3.6.1.2.1.47.1.1.1.1.7.6 = STRING: "FAN  2"
+   # .1.3.6.1.2.1.47.1.1.1.1.7.7 = STRING: "POWER SUPPLY  1"
+   # .1.3.6.1.2.1.47.1.1.1.1.7.8 = STRING: "POWER SUPPLY  1"
+   # .1.3.6.1.2.1.47.1.1.1.1.7.9 = STRING: "POWER SUPPLY  2"
+   # .1.3.6.1.2.1.47.1.1.1.1.7.10 = STRING: "POWER SUPPLY  2"
+   # .1.3.6.1.2.1.47.1.1.1.1.7.11 = STRING: "OTHER"
+
+   $fan_count = 0;				#initialize variable 
+   $ps_count = 0;				#initialize variable 
+   $oid = "1.3.6.1.2.1.47.1.1.1.1.2"; 
+   $cmd = "$snmpwalk $oid 2>&1";			#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 				#open a filehandle for reading 
+   while (<IN>) {                          	#read a line from STDIN
+      if ( /STRING: \"FAN\"/ ) {  #look for a response to the snmp query
+         $fan_count++;				#increment counter
+      } 					#end of if block
+      if ( /STRING: \"POWER SUPPLY\"/ ) {  #look for a response to the snmp query
+         $ps_count++;				#increment counter
+      } 					#end of if block
+   }						#end of while loop
+   close IN;					#close filehandle
+   print "   fan_count is $fan_count  powersupply_count is $ps_count \n" if ($verbose eq "yes");
+}									#end of subroutine
+
+
+
+
+sub print_output {
+   #
+   print "running print_output subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   $common_output = "Model:$switch_type Port_count:$port_count FabOS_version:$fabos_version CPU_util:${cpu_util}% RAM_util:${ram_util}% Temperature:${temperature}C Fans:$fan_count Power_supplies:$ps_count";
+   if ( ($switch_status eq "OK") && ($cpu_util < 50) ) {
+       print "$CHECK_NAME OK - fibre switch is healthy.  $common_output \n";
+       exit $OK;
+   }
+   if ( ($switch_status eq "OK") && ($cpu_util >= 50) ) {
+       print "$CHECK_NAME WARN - fibre switch is healthy, but the CPU util is ${cpu_util}%, which is higher than normal.  $common_output \n";
+       exit $WARN;
+   }
+   if ( $switch_status eq "Unknown Fault" ) {
+   print "$CHECK_NAME WARN - fibre switch is faulty.  Please investigate. $common_output \n";
+       exit $WARN;
+   }
+   if ( $switch_status eq "Embedded Port Fault" ) {
+       print "$CHECK_NAME WARN - fibre switch has an embedded port fault.  Please investigate. $common_output \n";
+       exit $WARN;
+   }
+   if ( $switch_status eq "unknown" ) {
+       print "$CHECK_NAME WARN - fibre switch health status is unknown.  Please investigate. $common_output \n";
+       exit $WARN;
+   }
+   # we only get here if the state is unknown
+   print "$CHECK_NAME WARN - Could not determine state of $switch_type fibre switch.  $common_output  \n";
+   exit $WARN;
+}			#end of subroutine
+
+
+
+
+
+
+# ----------------------- main body of program -------------------------------
+get_options;
+sanity_checks;
+get_usage;
+confirm_snmp_working;
+get_switch_type;
+get_switch_status;
+get_port_count;
+get_fabos_version;
+get_cpu_util;
+get_ram_util;
+get_temperature;
+get_fan_count;
+print_output;
+
+
+
