@@ -32,6 +32,7 @@
 #  2020/l2/23 	njeffrey 	Replace Net::SNMP perl module with snmpget/snmpwalk
 #  2022/04/04 	njeffrey 	Add get_frame_discard_count subroutine
 #  2022/04/04 	njeffrey 	Add -On parameter to snmpget to output OID values in numeric form for easier regex matching
+#  2022/05/12 	njeffrey 	Add nagios performance data to output
 
 
 
@@ -74,7 +75,7 @@ use Getopt::Long;                       	#allow --long-switches to be used as pa
 
 # declare variables
 my ($OK,$WARN,$CRITICAL,$UNKNOWN);
-my ($CHECK_NAME,$host,$community,$community_default,$switch_type,$switch_status,$port_count,$fabos_version);
+my ($CHECK_NAME,$host,$community,$community_default,$switch_type,$switch_status,$port_count,$fabos_version,$perf_data);
 my ($pingstatus,$snmpwalk,$snmpget,$cmd,$sysdescr,$cpu_util,$ram_util,$fan_count,$ps_count,$temperature,$common_output);
 my ($opt_c,$opt_h,$opt_H,$opt_v);
 my ($verbose,$oid);
@@ -577,7 +578,24 @@ sub print_output {
    print "running print_output subroutine \n" if ($verbose eq "yes");
    #
    #
-   $common_output = "Model:$switch_type Port_count:$port_count FabOS_version:$fabos_version CPU_util:${cpu_util}% RAM_util:${ram_util}% Temperature:${temperature}C Fans:$fan_count Power_supplies:$ps_count $all_port_errors";
+   # The nagios performance data will be the same for all the outputs, so just put it in a variable that can be use by all the output options
+   #
+   # The format is:  label=value[UOM];[warn];[crit];[min];[max]
+   # On the "label=value" section is required.  The warn|crit|min|max entries are optional.
+   # You can have multiple items of perf data, just separate each section with a space
+   # UOM is Units Of Measurement.    Can be s=seconds B=bytes MB=megabytes %=percent c=counter
+   # You can use the standard nagios ranges and thresholds formats (examples below)
+   # Range definition   Generate an alert if x...
+   # ----------------   -------------------------
+   # 10                 < 0 or > 10, (outside the range of {0 .. 10})
+   # 10:                < 10, (outside {10 .. ∞})
+   # ~:10               > 10, (outside the range of {-∞ .. 10})
+   # 10:20              < 10 or > 20, (outside the range of {10 .. 20})
+   # @10:20             ≥ 10 and ≤ 20, (inside the range of {10 .. 20})
+   #
+   $perf_data = "temperature_C=$temperature;;;; cpu_util=$cpu_util\%;;;; ram_util=$ram_util\%;;;;";   
+   #
+   $common_output = "Model:$switch_type Port_count:$port_count FabOS_version:$fabos_version CPU_util:${cpu_util}% RAM_util:${ram_util}% Temperature:${temperature}C Fans:$fan_count Power_supplies:$ps_count $all_port_errors | $perf_data ";
    if ( ($switch_status eq "OK") && ($cpu_util < 50) && ($all_port_errors eq "") ) {
        print "$CHECK_NAME OK - fibre switch is healthy.  $common_output \n";
        exit $OK;
