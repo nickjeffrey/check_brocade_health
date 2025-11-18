@@ -230,6 +230,7 @@ sub confirm_snmp_working {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open(IN,"$cmd |"); 		#open a filehandle for reading 
    while (<IN>) {                          	#read a line from STDIN
+      s/\"//g;                                  #get rid of any quotation marks
       if ( /STRING: ([a-zA-Z0-9\.]+)/ ) {  	#look for a response to the snmp query
          $sysdescr = $1;			#assign more mnemonic variable name
       } 					#end of if block
@@ -649,6 +650,7 @@ get_temperature;
 get_fan_count;
 get_c3_frame_discard_count;
 print_output;
+
 
 
 
