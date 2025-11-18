@@ -33,6 +33,7 @@
 #  2022/04/04 	njeffrey 	Add get_frame_discard_count subroutine
 #  2022/04/04 	njeffrey 	Add -On parameter to snmpget to output OID values in numeric form for easier regex matching
 #  2022/05/12 	njeffrey 	Add nagios performance data to output
+#  2025/11/17 	njeffrey 	Regex bugfix, remove quotation marks from snmpget output
 
 
 
@@ -256,7 +257,8 @@ sub get_switch_type {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open(IN,"$cmd |"); 				#open a filehandle for reading 
    while (<IN>) {                          	#read a line from STDIN
-      if ( /STRING: \"([0-9a-zA-Z_\.]+)\"/ ) {  #look for a response to the snmp query
+      s/\"//g;                                  #get rid of any quotation marks
+      if ( /STRING: ([0-9a-zA-Z_\.]+)/ ) {  #look for a response to the snmp query
          $switch_type = $1;			#assign more mnemonic variable name
          print "   switch_type is $switch_type \n" if ($verbose eq "yes");
       } 					#end of if block
@@ -288,6 +290,7 @@ sub get_switch_status {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open(IN,"$cmd |"); 				#open a filehandle for reading 
    while (<IN>) {                          	#read a line from STDIN
+      s/\"//g;                                  #get rid of any quotation marks
       if ( /INTEGER: ([0-9]+)/ ) {  		#look for a response to the snmp query
          $switch_status = $1;			#assign more mnemonic variable name
          print "   switch_status is $switch_status  (1=ok 2=faulty 3=embedded-port-fault) \n" if ($verbose eq "yes");
@@ -328,6 +331,7 @@ sub get_port_count {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open(IN,"$cmd |"); 				#open a filehandle for reading 
    while (<IN>) {                          	#read a line from STDIN
+      s/\"//g;                                  #get rid of any quotation marks
       if ( /STRING: FC port/ ) {  		#look for a response to the snmp query
          $port_count++;				#increment counter
       } 					#end of if block
@@ -354,7 +358,8 @@ sub get_fabos_version {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open(IN,"$cmd |"); 				#open a filehandle for reading 
    while (<IN>) {                          	#read a line from STDIN
-      if ( /STRING: \"([0-9a-zA-Z_\.]+)\"/ ) {  #look for a response to the snmp query
+      s/\"//g;                                  #get rid of any quotation marks
+      if ( /STRING: ([0-9a-zA-Z_\.]+)/ ) {  #look for a response to the snmp query
          $fabos_version = $1;			#assign to variable
       } 					#end of if block
    }						#end of while loop
@@ -376,6 +381,7 @@ sub get_cpu_util {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open(IN,"$cmd |"); 				#open a filehandle for reading 
    while (<IN>) {                          	#read a line from STDIN
+      s/\"//g;                                  #get rid of any quotation marks
       if ( /INTEGER: ([0-9]+)/ ) {  		#look for a response to the snmp query
          $cpu_util = $1;			#assign more mnemonic variable name
          print "   cpu_util is ${cpu_util}%  \n" if ($verbose eq "yes");
@@ -396,6 +402,7 @@ sub get_ram_util {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open(IN,"$cmd |"); 				#open a filehandle for reading 
    while (<IN>) {                          	#read a line from STDIN
+      s/\"//g;                                  #get rid of any quotation marks
       if ( /INTEGER: ([0-9]+)/ ) {  		#look for a response to the snmp query
          $ram_util = $1;			#assign more mnemonic variable name
          print "   ram_util is ${ram_util}%  \n" if ($verbose eq "yes");
@@ -419,6 +426,7 @@ sub get_temperature {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open(IN,"$cmd |"); 				#open a filehandle for reading 
    while (<IN>) {                          	#read a line from STDIN
+      s/\"//g;                                  #get rid of any quotation marks
       if ( /INTEGER: ([0-9]+)/ ) {  		#look for a response to the snmp query
          $temperature = $1;			#assign more mnemonic variable name
          print "   temperature is ${temperature}C  \n" if ($verbose eq "yes");
@@ -464,7 +472,8 @@ sub get_fan_count {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open(IN,"$cmd |"); 				#open a filehandle for reading 
    while (<IN>) {                          	#read a line from STDIN
-      if ( /STRING: \"FAN\"/ ) {  #look for a response to the snmp query
+   s/\"//g;                                  #get rid of any quotation marks
+      if ( /STRING: FAN/ ) {  #look for a response to the snmp query
          $fan_count++;				#increment counter
       } 					#end of if block
       if ( /STRING: \"POWER SUPPLY\"/ ) {  #look for a response to the snmp query
@@ -548,6 +557,7 @@ sub get_c3_frame_discard_count {
    print "   running command: $cmd \n" if ($verbose eq "yes");
    open(IN,"$cmd |"); 							#open a filehandle for reading 
    while (<IN>) {                          				#read a line from STDIN
+      s/\"//g;                                  #get rid of any quotation marks
       if ( /$oid\.([0-9]+) = Counter32: ([0-9]+)/ ) {  			#look for a response to the snmp query
          $port = $1; 							#capture port number from SNMP OID
          $port--;							#decrement by 1 because port numbers should start with 0 instead of 1
@@ -650,6 +660,7 @@ get_temperature;
 get_fan_count;
 get_c3_frame_discard_count;
 print_output;
+
 
 
 
